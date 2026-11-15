@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}选择厂区与月份 · 表计核对{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="result-head">
+    <h1>选择核对范围</h1>
+    <a class="secondary" href="/meters">重新上传</a>
+  </div>
+  <p class="files">
+    读数文件：<code>{{ session.readings_name }}</code> ·
+    表计树：<code>{{ session.tree_name }}</code>
+  </p>
+
+  <div class="banner success" role="status">
+    <strong>文件校验通过</strong>
+    <p>
+      表计树含 {{ session.tree.node_count }} 个计量点（其中末端点位
+      {{ session.tree.leaves|length }} 个，根表 <code>{{ session.tree.root }}</code>）；
+      读数文件覆盖 {{ session.upload.sites|length }} 个厂区、
+      {{ session.upload.months|length }} 个月份。
+    </p>
+  </div>
+
+  {% if session.upload.ignored_columns or session.tree_ignored %}
+  <div class="banner warning">
+    <strong>存在被忽略的额外列</strong>
+    <ul>
+      {% for item in session.upload.ignored_columns %}<li>读数文件 {{ item }}</li>{% endfor %}
+      {% for item in session.tree_ignored %}<li>表计树 {{ item }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form action="/meters/reconcile" method="post" class="upload-form">
+    <input type="hidden" name="token" value="{{ token }}">
+    <div class="field">
+      <label for="site">厂区</label>
+      <select id="site" name="site" required>
+        <option value="" disabled selected>请选择厂区</option>
+        {% for item in session.upload.sites %}<option value="{{ item }}">{{ item }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="month">月份</label>
+      <select id="month" name="month" required>
+        <option value="" disabled selected>请选择月份</option>
+        {% for item in session.upload.months %}<option value="{{ item }}">{{ item }}</option>{% endfor %}
+      </select>
+    </div>
+    <button type="submit">开始核对</button>
+  </form>
+</section>
+{% endblock %}

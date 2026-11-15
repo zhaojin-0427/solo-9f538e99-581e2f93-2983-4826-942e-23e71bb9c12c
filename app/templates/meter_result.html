@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}核对结果 · 表计核对{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="result-head">
+    <h1>表计核对结果</h1>
+    <a class="secondary" href="/meters">重新上传</a>
+  </div>
+  <p class="files">
+    读数文件：<code>{{ session.readings_name }}</code> ·
+    表计树：<code>{{ session.tree_name }}</code><br>
+    核对范围：<strong>{{ selected_site }}</strong> ·
+    <strong>{{ selected_month }}</strong>
+  </p>
+
+  {% if errors %}
+  <div class="banner error" role="alert">
+    <strong>无法核对 —— 未给出任何总量</strong>
+    <ul>{% for message in errors %}<li>{{ message }}</li>{% endfor %}</ul>
+  </div>
+  <p><a class="button" href="/meters">重新上传文件</a></p>
+
+  {% elif result %}
+    {% if not result.feasible %}
+    <div class="banner error" role="alert">
+      <strong>不存在完整覆盖的表计组合 —— 无法给出总量</strong>
+      <p>以下分支没有任何可用读数，其末端点位无法被任何祖先表计覆盖：</p>
+    </div>
+    <h2>无法补足的分支（{{ result.gaps|length }} 处）</h2>
+    <div class="table-scroll">
+      <table class="grid">
+        <thead>
+          <tr><th>#</th><th>缺失分支（自根表路径）</th><th>涉及末端点位</th></tr>
+        </thead>
+        <tbody>
+          {% for gap in result.gaps %}
+          <tr>
+            <td>{{ loop.index }}</td>
+            <td><code>{{ gap.path|join(" → ") }}</code></td>
+            <td>
+              {% for leaf in gap.leaves %}<code>{{ leaf }}</code>{% if not loop.last %}、{% endif %}{% endfor %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% else %}
+      {% if result.needs_review %}
+      <div class="banner warning" role="alert">
+        <strong>待核查：最小与最大用电量不一致</strong>
+        <p>
+          共 {{ result.combo_count }} 种完整覆盖且不重复计量的组合，
+          最小与最大总量相差
+          <code>{{ result.max_combo.total - result.min_combo.total }}</code> kWh，
+          请人工核查表计读数后再入账。
+        </p>
+      </div>
+      {% else %}
+      <div class="banner success" role="status">
+        <strong>核对一致</strong>
+        <p>
+          共 {{ result.combo_count }} 种完整覆盖且不重复计量的组合，
+          所有组合的用电量均为 <code>{{ result.min_combo.total }}</code> kWh。
+        </p>
+      </div>
+      {% endif %}
+
+      <h2>用电量区间与采用的表计</h2>
+      <div class="table-scroll">
+        <table class="grid">
+          <thead>
+            <tr><th>口径</th><th>用电量（kWh）</th><th>采用的表计</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>最小组合</td>
+              <td><strong>{{ result.min_combo.total }}</strong></td>
+              <td>
+                {% for meter in result.min_combo.meters %}<code>{{ meter }}</code>{% if not loop.last %}、{% endif %}{% endfor %}
+              </td>
+            </tr>
+            <tr>
+              <td>最大组合</td>
+              <td><strong>{{ result.max_combo.total }}</strong></td>
+              <td>
+                {% for meter in result.max_combo.meters %}<code>{{ meter }}</code>{% if not loop.last %}、{% endif %}{% endfor %}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>本期读数明细（{{ result.reading_count }} 条）</h2>
+      <div class="table-scroll">
+        <table class="grid">
+          <thead>
+            <tr><th>计量点</th><th>末端</th><th>用电量（kWh）</th><th>用于最小组合</th><th>用于最大组合</th></tr>
+          </thead>
+          <tbody>
+            {% for row in result.slice_rows %}
+            <tr>
+              <td><code>{{ row.meter }}</code></td>
+              <td>{{ "是" if row.is_leaf else "否" }}</td>
+              <td>{{ row.value_text }}</td>
+              <td>{{ "✓" if row.in_min else "—" }}</td>
+              <td>{{ "✓" if row.in_max else "—" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% if result.unread_meters %}
+      <h2>本期无读数的表计（{{ result.unread_meters|length }} 个）</h2>
+      <p class="muted">
+        {% for meter in result.unread_meters %}<code>{{ meter }}</code>{% if not loop.last %}、{% endif %}{% endfor %}
+      </p>
+      {% endif %}
+    {% endif %}
+  {% endif %}
+
+  <div class="download">
+    <form action="/meters/reconcile" method="post">
+      <input type="hidden" name="token" value="{{ token }}">
+      <input type="hidden" name="site" value="{{ selected_site }}">
+      <input type="hidden" name="month" value="{{ selected_month }}">
+      <button type="submit" class="secondary-btn">重新计算</button>
+    </form>
+    <a class="secondary" href="/meters">上传其他文件</a>
+  </div>
+</section>
+{% endblock %}

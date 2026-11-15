@@ -8,12 +8,18 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .engine import Analysis, LedgerError, analyze
+from .reconcile import (
+    ReconcileError,
+    reconcile,
+    parse_meter_tree,
+    parse_readings,
+)
 from .spec import Contract, ContractError, parse_contract
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -67,7 +73,54 @@ class ResultStore:
             del self._items[key]
 
 
+@dataclass
+class ReconcileSession:
+    """Parsed uploads kept between the upload step and the selection step."""
+
+    tree: object
+    upload: object
+    readings_name: str
+    tree_name: str
+    tree_ignored: list[str]
+    created_at: float
+
+
+class SessionStore:
+    """In-memory store for parsed reconciliation sessions (TTL-bound)."""
+
+    def __init__(self, ttl: float = RESULT_TTL_SECONDS, capacity: int = MAX_RESULTS):
+        self._items: dict[str, ReconcileSession] = {}
+        self._lock = threading.Lock()
+        self._ttl = ttl
+        self._capacity = capacity
+
+    def put(self, session: ReconcileSession) -> str:
+        token = secrets.token_urlsafe(24)
+        now = time.monotonic()
+        with self._lock:
+            self._prune(now)
+            while len(self._items) >= self._capacity:
+                oldest = min(self._items, key=lambda key: self._items[key].created_at)
+                del self._items[oldest]
+            session.created_at = now
+            self._items[token] = session
+        return token
+
+    def get(self, token: str) -> ReconcileSession | None:
+        with self._lock:
+            self._prune(time.monotonic())
+            return self._items.get(token)
+
+    def _prune(self, now: float) -> None:
+        expired = [
+            key for key, item in self._items.items() if now - item.created_at > self._ttl
+        ]
+        for key in expired:
+            del self._items[key]
+
+
 store = ResultStore()
+sessions = SessionStore()
 
 
 def _safe_stem(filename: str | None) -> str:
@@ -187,4 +240,149 @@ async def download(token: str):
             "Content-Disposition": f'attachment; filename="{item.filename}"',
             "Cache-Control": "no-store",
         },
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Meter reconciliation (表计核对)
+# --------------------------------------------------------------------------- #
+
+
+def _missing_page(request: Request) -> HTMLResponse:
+    return _render(
+        request,
+        "meter_error.html",
+        {
+            "request": request,
+            "messages": ["核对会话已过期或不存在，请重新上传读数 CSV 与表计树 CSV。"],
+        },
+        status_code=404,
+    )
+
+
+@app.get("/meters", response_class=HTMLResponse)
+async def meters_index(request: Request):
+    return _render(request, "meters_index.html", {"request": request})
+
+
+@app.post("/meters/prepare", response_class=HTMLResponse)
+async def meters_prepare(
+    request: Request,
+    readings_upload: UploadFile | None = File(default=None, alias="readings"),
+    tree_upload: UploadFile | None = File(default=None, alias="tree"),
+):
+    errors: list[str] = []
+
+    readings_raw = b""
+    if readings_upload is not None:
+        readings_raw = await readings_upload.read(MAX_UPLOAD_BYTES + 1)
+    tree_raw = b""
+    if tree_upload is not None:
+        tree_raw = await tree_upload.read(MAX_UPLOAD_BYTES + 1)
+
+    if len(readings_raw) > MAX_UPLOAD_BYTES:
+        errors.append("读数文件超过 10 MiB 上限")
+    elif not readings_raw:
+        errors.append("请上传标准列读数 CSV（厂区、月份、计量点、用电量）")
+    if len(tree_raw) > MAX_UPLOAD_BYTES:
+        errors.append("表计树文件超过 10 MiB 上限")
+    elif not tree_raw:
+        errors.append("请上传该厂区的单根表计树 CSV（计量点、上级计量点）")
+
+    if errors:
+        return _render(
+            request,
+            "meters_index.html",
+            {"request": request, "upload_errors": errors},
+            status_code=422,
+        )
+
+    try:
+        tree_upload_obj = parse_meter_tree(tree_raw)
+    except ReconcileError as exc:
+        return _render(
+            request,
+            "meters_index.html",
+            {"request": request, "upload_errors": [str(exc)]},
+            status_code=422,
+        )
+    if tree_upload_obj.tree is None:
+        return _render(
+            request,
+            "meters_index.html",
+            {
+                "request": request,
+                "upload_errors": tree_upload_obj.problems,
+            },
+            status_code=422,
+        )
+
+    try:
+        reading_upload, reading_problems = parse_readings(readings_raw)
+    except ReconcileError as exc:
+        return _render(
+            request,
+            "meters_index.html",
+            {"request": request, "upload_errors": [str(exc)]},
+            status_code=422,
+        )
+    if reading_upload is None:
+        return _render(
+            request,
+            "meters_index.html",
+            {"request": request, "upload_errors": reading_problems},
+            status_code=422,
+        )
+
+    session = ReconcileSession(
+        tree=tree_upload_obj.tree,
+        upload=reading_upload,
+        readings_name=(readings_upload.filename if readings_upload else None) or "—",
+        tree_name=(tree_upload.filename if tree_upload else None) or "—",
+        tree_ignored=tree_upload_obj.ignored_columns,
+        created_at=0.0,
+    )
+    token = sessions.put(session)
+    return _render(
+        request,
+        "meters_select.html",
+        {
+            "request": request,
+            "token": token,
+            "session": session,
+        },
+    )
+
+
+@app.post("/meters/reconcile", response_class=HTMLResponse)
+async def meters_reconcile(
+    request: Request,
+    token: str = Form(...),
+    site: str = Form(""),
+    month: str = Form(""),
+):
+    session = sessions.get(token)
+    if session is None:
+        return _missing_page(request)
+
+    errors: list[str] = []
+    result = None
+    try:
+        result = reconcile(session.tree, session.upload, site, month)
+    except ReconcileError as exc:
+        errors.append(str(exc))
+
+    return _render(
+        request,
+        "meter_result.html",
+        {
+            "request": request,
+            "token": token,
+            "session": session,
+            "selected_site": site.strip(),
+            "selected_month": month.strip(),
+            "result": result,
+            "errors": errors,
+        },
+        status_code=422 if errors else 200,
     )

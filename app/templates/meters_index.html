@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}表计核对 · 碳核算台账标准化{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>表计核对：避免总表与分表重复计量</h1>
+  <p class="lede">
+    上传工具导出的标准列读数 CSV（厂区、月份、计量点、用电量）与该厂区的
+    <strong>单根</strong>表计树 CSV（计量点、上级计量点，根表上级留空）。
+    系统枚举所有能完整覆盖末端点位、又不重复计量的表计组合，给出最小/最大用电量
+    及其采用的表计；两值不同即标记为待核查。
+  </p>
+
+  {% if upload_errors %}
+  <div class="banner error" role="alert">
+    <strong>无法处理上传文件 —— 未进行任何核对，也不给出总量</strong>
+    <ul>{% for message in upload_errors %}<li>{{ message }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <form action="/meters/prepare" method="post" enctype="multipart/form-data" class="upload-form">
+    <div class="field">
+      <label for="readings">读数 CSV（标准列，UTF-8）</label>
+      <input id="readings" name="readings" type="file" accept=".csv,text/csv" required>
+      <p class="hint">
+        表头须包含 <code>厂区</code>、<code>月份</code>、<code>计量点</code>、<code>用电量</code>
+        （支持常见别名）；重复或负数读数将被拒绝。
+      </p>
+    </div>
+    <div class="field">
+      <label for="tree">表计树 CSV（单根，UTF-8）</label>
+      <input id="tree" name="tree" type="file" accept=".csv,text/csv" required>
+      <p class="hint">
+        表头须包含 <code>计量点</code>、<code>上级计量点</code>；根表的上级留空，
+        单个厂区最多 200 个点位。
+      </p>
+    </div>
+    <button type="submit">上传并选择厂区/月份</button>
+  </form>
+</section>
+
+<section class="panel help">
+  <h2>表计树示例</h2>
+<pre>计量点,上级计量点
+厂区总表,
+车间A总,厂区总表
+A-进线1,车间A总
+A-进线2,车间A总
+车间B总,厂区总表
+B-进线1,车间B总</pre>
+  <h2>核对规则</h2>
+  <ul>
+    <li>父表读数可代表整棵子树，也可分别采用子表读数；祖先与后代绝不同时计入。</li>
+    <li>合法组合是覆盖全部末端点位的“切割面”：每个末端恰被一个选中表计的子树覆盖。</li>
+    <li>枚举所有合法组合后取最小、最大用电量；两值不同判为<strong>待核查</strong>。</li>
+    <li>若某条分支完全没有读数、无法构成完整组合，则指出无法补足的分支，不给总量。</li>
+    <li>重复/负数读数、多根表、环路、上级缺失、超过 200 点：整体报错且不给总量。</li>
+  </ul>
+</section>
+{% endblock %}

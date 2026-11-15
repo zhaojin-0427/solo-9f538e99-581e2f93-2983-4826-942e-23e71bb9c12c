@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}会话失效 · 表计核对{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>核对会话不可用</h1>
+  <div class="banner error" role="alert">
+    <ul>{% for message in messages %}<li>{{ message }}</li>{% endfor %}</ul>
+  </div>
+  <p><a class="button" href="/meters">返回表计核对</a></p>
+</section>
+{% endblock %}
